@@ -1,0 +1,16 @@
+# Bí mật – không bao giờ commit
+.env
+*.pem
+
+# Chứng chỉ tự ký sinh ra bởi scripts/gen-certs.sh
+nginx/certs/*.crt
+nginx/certs/*.key
+
+# Bản sao lưu cơ sở dữ liệu
+backups/
+
+# Rác của IDE / hệ điều hành
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

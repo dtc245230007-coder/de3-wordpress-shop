@@ -1,0 +1,6 @@
+* text=auto
+
+# Script chạy trên Linux: ép LF để không lỗi "bad interpreter"
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.conf text eol=lf

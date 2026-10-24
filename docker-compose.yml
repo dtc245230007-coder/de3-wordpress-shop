@@ -1,0 +1,374 @@
+# =============================================================================
+# Đề 3 – Website Quảng bá Sản phẩm (WordPress)
+# Stack: WordPress + MySQL 8 + phpMyAdmin + Nginx reverse proxy
+#        + Prometheus / Grafana / Node Exporter / cAdvisor / MySQL Exporter
+#        + Loki / Promtail
+#
+# Chạy:  cp .env.example .env  ->  sửa mật khẩu  ->  chmod 600 .env
+#        bash scripts/gen-certs.sh  ->  docker compose up -d
+# =============================================================================
+name: de3-wp
+
+# -----------------------------------------------------------------------------
+# Mạng
+#   frontend   : nginx <-> wordpress (và các cổng publish ra ngoài)
+#   backend    : wordpress <-> db   (internal = không có route ra Internet)
+#   monitoring : prometheus <-> các exporter, loki
+# -----------------------------------------------------------------------------
+networks:
+  frontend:
+  backend:
+    internal: true
+  monitoring:
+
+volumes:
+  db_data:
+  wp_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+services:
+
+  # ===========================================================================
+  # LỚP DỮ LIỆU
+  # ===========================================================================
+  db:
+    image: mysql:8.0
+    container_name: de3-db
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-name-resolve
+      - --max-connections=100
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      WP_READONLY_USER: ${WP_READONLY_USER}
+      WP_READONLY_PASSWORD: ${WP_READONLY_PASSWORD}
+      MYSQL_EXPORTER_USER: ${MYSQL_EXPORTER_USER}
+      MYSQL_EXPORTER_PASSWORD: ${MYSQL_EXPORTER_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    tmpfs:
+      - /tmp
+      - /var/run/mysqld
+
+  # ===========================================================================
+  # LỚP ỨNG DỤNG
+  # ===========================================================================
+  wordpress:
+    image: wordpress:6.6-php8.2-apache
+    container_name: de3-wordpress
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_TABLE_PREFIX: wp_
+      # Cấu hình thêm vào wp-config.php ($$ = $ để Compose không nội suy)
+      WORDPRESS_CONFIG_EXTRA: |
+        define('DISALLOW_FILE_EDIT', true);
+        define('WP_AUTO_UPDATE_CORE', false);
+        define('FORCE_SSL_ADMIN', true);
+        if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO'])
+            && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+            $$_SERVER['HTTPS'] = 'on';
+        }
+    volumes:
+      - wp_data:/var/www/html
+      - ./php/uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini:ro
+    networks:
+      - backend
+      - frontend
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 80) ? 0 : 1);'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    # --- Hardening container -------------------------------------------------
+    # /var/www/html nằm trên volume có ghi (WordPress cần ghi upload, plugin).
+    # Phần còn lại của rootfs là chỉ đọc.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/apache2
+      - /var/lock/apache2
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+
+  phpmyadmin:
+    image: phpmyadmin:5.2-apache
+    container_name: de3-phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      PMA_ABSOLUTE_URI: http://127.0.0.1:8081/
+      UPLOAD_LIMIT: 64M
+      TMPDIR: /tmp
+    ports:
+      # Chỉ nghe trên loopback – truy cập qua SSH tunnel, không lộ ra LAN
+      - "127.0.0.1:8081:80"
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/apache2
+      - /var/lock/apache2
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+
+  # ===========================================================================
+  # LỚP TIẾP NHẬN – Nginx reverse proxy (điểm vào duy nhất)
+  # ===========================================================================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: de3-nginx
+    restart: unless-stopped
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    ports:
+      - "8080:8080"     # HTTP  -> 301 sang HTTPS
+      - "8443:8443"     # HTTPS (TLS 1.2/1.3, chứng chỉ tự ký)
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - frontend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE        # cần để đọc server.key quyền 600 của user trên host
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+
+  # ===========================================================================
+  # LỚP GIÁM SÁT
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: de3-prometheus
+    restart: unless-stopped
+    depends_on:
+      - nginx
+      - cadvisor
+      - node-exporter
+      - mysqld-exporter
+      - nginx-exporter
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=1GB
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring
+      - frontend
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: de3-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: de3-cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    networks:
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.15.1
+    container_name: de3-mysqld-exporter
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # mysqld_exporter >= 0.15 dùng cờ --mysqld.* thay cho DATA_SOURCE_NAME
+    command:
+      - --mysqld.address=db:3306
+      - --mysqld.username=${MYSQL_EXPORTER_USER}
+    environment:
+      MYSQLD_EXPORTER_PASSWORD: ${MYSQL_EXPORTER_PASSWORD}
+    networks:
+      - backend
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.1.0
+    container_name: de3-nginx-exporter
+    restart: unless-stopped
+    command:
+      - --nginx.scrape-uri=http://nginx:8090/stub_status
+    networks:
+      - frontend
+      - monitoring
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: de3-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - monitoring
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # ===========================================================================
+  # LỚP LOG TẬP TRUNG
+  # ===========================================================================
+  loki:
+    image: grafana/loki:2.9.6
+    container_name: de3-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - monitoring
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  promtail:
+    image: grafana/promtail:2.9.6
+    container_name: de3-promtail
+    restart: unless-stopped
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - monitoring
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
