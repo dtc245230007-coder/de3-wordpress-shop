@@ -116,6 +116,13 @@ DATA
 
 echo "== Menu =="
 "${WP[@]}" menu create 'Chính' >/dev/null 2>&1 || true
+# Xoá item cũ trước khi thêm: nếu không, mỗi lần chạy lại menu sẽ dài thêm
+# một bộ Trang chủ / Giới thiệu / Liên hệ (menu item không có slug để nhận diện).
+read -r -a OLD_ITEMS <<< "$("${WP[@]}" menu item list chinh --format=ids 2>/dev/null || true)"
+if [ "${#OLD_ITEMS[@]}" -gt 0 ]; then
+  "${WP[@]}" menu item delete "${OLD_ITEMS[@]}" >/dev/null 2>&1 || true
+  echo "  - xoá ${#OLD_ITEMS[@]} item menu cũ" >&2
+fi
 "${WP[@]}" menu item add-post chinh "$HOME_ID"    --title='Trang chủ'  >/dev/null 2>&1 || true
 "${WP[@]}" menu item add-post chinh "$ABOUT_ID"   --title='Giới thiệu' >/dev/null 2>&1 || true
 "${WP[@]}" menu item add-post chinh "$CONTACT_ID" --title='Liên hệ'    >/dev/null 2>&1 || true

@@ -66,6 +66,13 @@ Loki và Promtail — tất cả định nghĩa trong một tệp `docker-compos
 > Chỉ Nginx công bố cổng ra ngoài. Mọi cổng quản trị đều bind `127.0.0.1`,
 > truy cập từ máy khác phải qua SSH tunnel — đây là một biện pháp hardening.
 
+> **Vì sao phpMyAdmin nằm trên hai mạng?** Docker không thiết lập được ánh xạ
+> cổng cho container chỉ tham gia mạng `internal: true` (bridge không có
+> gateway), biểu hiện là `NetworkSettings.Ports` rỗng và cổng 8081 không
+> listen. Vì vậy phpMyAdmin vừa ở `backend` (để nói chuyện với MySQL) vừa ở
+> mạng `admin` — một bridge thường chỉ có duy nhất nó — để publish được
+> `127.0.0.1:8081`. Không container nào khác tham gia mạng `admin`.
+
 ---
 
 ## 3. Cấu trúc thư mục
@@ -84,8 +91,18 @@ de3-wordpress-shop/
 │   ├── prometheus/{prometheus.yml,alerts.yml}
 │   ├── loki/loki-config.yml
 │   ├── promtail/promtail-config.yml
-│   └── grafana/{provisioning,dashboards}
-├── scripts/{gen-certs.sh,backup.sh}
+│   └── grafana/
+│       ├── provisioning/{datasources,dashboards}
+│       └── dashboards/de3-*.json  # 3 dashboard mẫu + 1 dashboard tự viết
+├── scripts/
+│   ├── gen-certs.sh              # sinh chứng chỉ tự ký (SAN = IP máy ảo)
+│   ├── wp.sh                     # chạy WP-CLI trên volume của container
+│   ├── seed-demo.sh              # nạp dữ liệu mẫu (idempotent)
+│   └── verify.sh                 # 17 kiểm tra, in minh chứng cho báo cáo
+├── docs/
+│   ├── screenshots/              # ảnh minh chứng
+│   ├── grab.py                   # chụp ảnh trang cần đăng nhập qua DevTools
+│   └── verify-output.txt         # kết quả lần kiểm chứng gần nhất
 └── README.md
 ```
 
@@ -311,7 +328,29 @@ gunzip -c backups/wordpress_2026-10-24_023000.sql.gz \
 
 ---
 
-## 8. Lộ trình 3 commit mốc
+## 8. Minh chứng triển khai
+
+Toàn bộ ảnh nằm trong `docs/screenshots/`, kết quả kiểm chứng bằng văn bản ở
+`docs/verify-output.txt` (17 đạt / 0 lỗi).
+
+| Ảnh | Nội dung |
+|---|---|
+| `site-home.png` | Trang chủ TechMart qua HTTPS 8443: menu 3 mục, khối "Sản phẩm nổi bật" lấy 6 bài mới nhất bằng block `latest-posts` |
+| `site-product.png` | Trang chi tiết `san-pham-1` (TechPhone X1 Pro): giá, mô tả, thông số |
+| `prometheus-targets.png` | Prometheus `/targets` — 6/6 job UP (cadvisor, loki, mysql, nginx, node, prometheus) |
+| `grafana-website.png` | Dashboard tự viết "Website – Nginx & WordPress": req/s, kết nối đang mở, tổng request 5 phút, log Nginx đọc từ Loki |
+| `grafana-node.png` | Dashboard *Node Exporter Full* (ID 1860) |
+| `grafana-cadvisor.png` | Dashboard *Cadvisor exporter* (ID 14282) — CPU/RAM/mạng theo từng container |
+| `grafana-mysql.png` | Dashboard *MySQL Overview* (ID 7362) |
+| `phpmyadmin-tables.png` | phpMyAdmin đăng nhập bằng `wp_readonly`, xem `wordpress.wp_posts` |
+
+Ảnh của Grafana/phpMyAdmin được chụp bằng `docs/grab.py`: script đăng nhập qua
+HTTP để lấy cookie phiên rồi nạp cookie vào Chrome headless qua DevTools
+Protocol — không cần bật anonymous hay hạ cấu hình bảo mật nào.
+
+---
+
+## 9. Lộ trình 3 commit mốc
 
 ```bash
 git init
@@ -336,7 +375,7 @@ git push -u origin main --tags
 
 ---
 
-## 9. Xử lý sự cố
+## 10. Xử lý sự cố
 
 | Hiện tượng | Nguyên nhân thường gặp | Cách xử lý |
 |---|---|---|
@@ -349,12 +388,15 @@ git push -u origin main --tags
 | Nginx 403 với `.well-known` | Quy tắc chặn tệp ẩn | Kiểm tra `location ~ /\.(?!well-known)` |
 | Nginx lỗi `open() "/etc/nginx/certs/server.key" failed (13: Permission denied)` | `cap_drop: ALL` bỏ mất `DAC_OVERRIDE`, không đọc được khóa quyền 600 | Giữ `DAC_OVERRIDE` trong `cap_add` của nginx |
 | `docker compose pull` lỗi `GDBus ... org.freedesktop.secrets` | Credential helper của GNOME không chạy trong phiên SSH | `docker pull` từng image, hoặc để `~/.docker/config.json` là `{"auths":{}}` |
+| Container "Up" nhưng cổng publish không listen, `NetworkSettings.Ports` rỗng | Container chỉ nằm trên mạng `internal: true` – bridge không có gateway nên Docker bỏ qua ánh xạ cổng | Thêm một mạng bridge thường (ở đây là `admin`) cho container cần publish cổng |
+| phpMyAdmin lỗi `config.secret.inc.php: Read-only file system` | `read_only: true` chặn entrypoint ghi khoá blowfish | Mount named volume `pma_config` vào `/etc/phpmyadmin` (đã cấu hình sẵn) |
+| phpMyAdmin báo `Error during session start ... Read-only file system` | PHP ghi session vào `/sessions` | Thêm `/sessions` vào `tmpfs` (đã cấu hình sẵn) |
 | `wp: command not found` trong `wordpress:cli` | Entrypoint của image chỉ tự thêm `wp` khi `wp help "$1"` chạy được | Gọi bằng `--entrypoint wp`, hoặc dùng `scripts/wp.sh` đã đóng gói sẵn |
 | WP-CLI báo không ghi được `wp-content/uploads` | `wordpress:cli` (Alpine) có `www-data` = uid 82, còn image Apache (Debian) là uid 33 | Chạy container CLI với `--user 33:33` |
 
 ---
 
-## 10. Tài liệu tham khảo
+## 11. Tài liệu tham khảo
 
 1. WordPress, *Docker Official Image* – <https://hub.docker.com/_/wordpress>
 2. MySQL, *MySQL 8.0 Reference Manual* – <https://dev.mysql.com/doc/refman/8.0/en/>

@@ -20,6 +20,10 @@ networks:
   backend:
     internal: true
   monitoring:
+  # Mạng riêng chỉ có phpMyAdmin. Docker KHÔNG publish được cổng của container
+  # nằm trên mạng internal, nên cần một bridge thường để mở cổng ra loopback.
+  # Không container nào khác tham gia mạng này.
+  admin:
 
 volumes:
   db_data:
@@ -27,6 +31,7 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  pma_config:
 
 services:
 
@@ -149,13 +154,22 @@ services:
     ports:
       # Chỉ nghe trên loopback – truy cập qua SSH tunnel, không lộ ra LAN
       - "127.0.0.1:8081:80"
+    volumes:
+      # Entrypoint của phpMyAdmin sinh /etc/phpmyadmin/config.secret.inc.php
+      # (khoá blowfish cho phiên đăng nhập) nên thư mục này phải ghi được.
+      # Dùng named volume thay vì mở read_only cho cả rootfs.
+      - pma_config:/etc/phpmyadmin
     networks:
       - backend
+      - admin
     read_only: true
     tmpfs:
       - /tmp
       - /var/run/apache2
       - /var/lock/apache2
+      # Image đặt session.save_path = /sessions; thiếu tmpfs này thì
+      # đăng nhập báo "Error during session start ... Read-only file system".
+      - /sessions
     security_opt:
       - no-new-privileges:true
     cap_drop:
