@@ -10,6 +10,20 @@ cd "$(dirname "$0")/.."
 WP=(bash scripts/wp.sh)
 SITE_URL="https://192.168.75.129:8443"
 
+# WP-CLI tạo bài khi không có phiên đăng nhập sẽ để post_author = 0, khiến theme
+# in "By" với tên trống và sinh link hỏng /author/. Luôn gán tác giả là admin.
+ADMIN_ID=$("${WP[@]}" user list --role=administrator --field=ID 2>/dev/null | head -1)
+[ -n "$ADMIN_ID" ] || ADMIN_ID=1
+
+# Sửa cả những bài đã tạo trước khi có dòng trên (idempotent)
+mapfile -t ORPHANS < <("${WP[@]}" post list --post_type=post,page \
+  --fields=ID,post_author --format=csv 2>/dev/null \
+  | awk -F, -v a="$ADMIN_ID" 'NR>1 && $2!=a {print $1}')
+if [ "${#ORPHANS[@]}" -gt 0 ]; then
+  "${WP[@]}" post update "${ORPHANS[@]}" --post_author="$ADMIN_ID" >/dev/null
+  echo "  - gán tác giả admin cho ${#ORPHANS[@]} bài cũ" >&2
+fi
+
 # --- Hàm tiện ích ------------------------------------------------------------
 id_of() {  # $1 = post_type, $2 = slug
   "${WP[@]}" post list --post_type="$1" --name="$2" --field=ID --format=ids 2>/dev/null | head -1
@@ -19,7 +33,8 @@ ensure_page() {  # $1=title $2=slug $3=content
   local id; id=$(id_of page "$2")
   if [ -z "$id" ]; then
     id=$("${WP[@]}" post create --post_type=page --post_status=publish \
-      --post_title="$1" --post_name="$2" --post_content="$3" --porcelain)
+      --post_title="$1" --post_name="$2" --post_content="$3" \
+      --post_author="$ADMIN_ID" --porcelain)
     echo "  + trang: $1 (ID $id)" >&2
   fi
   printf '%s' "$id"
@@ -101,7 +116,8 @@ while IFS='|' read -r title price desc imgid; do
 <p>Liên hệ hotline <strong>1900 1234</strong> để được tư vấn.</p>"
     post_id=$("${WP[@]}" post create --post_type=post --post_status=publish \
       --post_title="$title" --post_name="$slug" --post_content="$content" \
-      --post_excerpt="$desc" --post_category="$CAT_ID" --porcelain)
+      --post_excerpt="$desc" --post_category="$CAT_ID" \
+      --post_author="$ADMIN_ID" --porcelain)
     echo "  + ${title}"
   fi
   ensure_featured "$post_id" "$imgid"

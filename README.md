@@ -345,10 +345,13 @@ Toàn bộ ảnh nằm trong `docs/screenshots/`, kết quả kiểm chứng b�
 | `grafana-cadvisor.png` | Dashboard *Cadvisor exporter* (ID 14282) — CPU/RAM/mạng theo từng container |
 | `grafana-mysql.png` | Dashboard *MySQL Overview* (ID 7362) |
 | `phpmyadmin-tables.png` | phpMyAdmin đăng nhập bằng `wp_readonly`, xem `wordpress.wp_posts` |
+| `wp-admin-login.png` | Trang đăng nhập `/wp-login.php` (giao diện tiếng Việt) |
+| `wp-admin-dashboard.png` | Bảng điều khiển WordPress: "Xin chào, admin", 6 bài viết, 4 trang, giao diện Astra |
+| `wp-admin-products.png` | Danh sách 6 sản phẩm trong mục Bài viết, tác giả `admin` |
 
-Ảnh của Grafana/phpMyAdmin được chụp bằng `docs/grab.py`: script đăng nhập qua
-HTTP để lấy cookie phiên rồi nạp cookie vào Chrome headless qua DevTools
-Protocol — không cần bật anonymous hay hạ cấu hình bảo mật nào.
+Ảnh của Grafana/phpMyAdmin được chụp bằng `docs/grab.py`; ảnh `/wp-admin` chụp
+theo cùng cách (đăng nhập HTTP để lấy cookie phiên rồi nạp vào Chrome headless
+qua DevTools Protocol) — không cần bật anonymous hay hạ cấu hình bảo mật nào.
 
 ---
 
@@ -395,6 +398,10 @@ git push -u origin main --tags
 | phpMyAdmin báo `Error during session start ... Read-only file system` | PHP ghi session vào `/sessions` | Thêm `/sessions` vào `tmpfs` (đã cấu hình sẵn) |
 | `wp: command not found` trong `wordpress:cli` | Entrypoint của image chỉ tự thêm `wp` khi `wp help "$1"` chạy được | Gọi bằng `--entrypoint wp`, hoặc dùng `scripts/wp.sh` đã đóng gói sẵn |
 | WP-CLI báo không ghi được `wp-content/uploads` | `wordpress:cli` (Alpine) có `www-data` = uid 82, còn image Apache (Debian) là uid 33 | Chạy container CLI với `--user 33:33` |
+| `wp db query` báo `Plugin caching_sha2_password could not be loaded` | Client MariaDB trong `wordpress:cli` không có plugin xác thực của MySQL 8 | Sửa dữ liệu bằng `wp post update ...` (chạy qua PHP), hoặc dùng `docker compose exec db mysql ...` |
+| Bài viết hiện "By" trống, link `/author/` trả 404 | Bài do WP-CLI tạo khi không có phiên đăng nhập nên `post_author = 0` | Chạy lại `scripts/seed-demo.sh` — script đã gán `--post_author` và tự sửa các bài cũ |
+| Promtail lặp lại `could not inspect container info ... No such container` | `docker_sd_configs` quét mọi container trên máy trước khi relabel; container tạm của `scripts/wp.sh` biến mất giữa hai lần quét | Đã thêm `filters` theo label `com.docker.compose.project=de3-wp` ngay ở Docker API |
+| Log bị trùng sau khi restart Promtail | `positions.yaml` nằm trong `/tmp` (tmpfs) nên mất theo container | Đã chuyển sang volume `promtail_data:/var/lib/promtail` |
 
 ---
 
