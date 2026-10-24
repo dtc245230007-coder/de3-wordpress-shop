@@ -1,0 +1,48 @@
+# =============================================================================
+# Promtail 2.9.6 – đọc log mọi container qua Docker socket, đẩy lên Loki
+# Nhãn gắn kèm: container, service, project, stream
+# =============================================================================
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    batchwait: 1s
+    batchsize: 1048576
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Chỉ thu log của stack này (máy ảo còn chạy các lab khác như
+      # nginx-proxy-manager, web1_app – không nên trộn vào Loki của đề tài).
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        regex: 'de3-wp'
+        action: keep
+      # Tên container: "/de3-nginx" -> "de3-nginx"
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      # Tên service trong docker compose
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+      # Tên project compose ("de3-wp") để tách log giữa nhiều dự án
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+      # stdout / stderr
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+    pipeline_stages:
+      # Tách đúng luồng và thời gian do Docker ghi
+      - docker: {}
