@@ -1,0 +1,83 @@
+# =============================================================================
+# Quy tắc cảnh báo – ba lớp: hạ tầng / dịch vụ / ứng dụng
+# Mỗi quy tắc có "for" để tránh cảnh báo giả (alert fatigue)
+# =============================================================================
+groups:
+  - name: de3-infrastructure
+    rules:
+      - alert: HighCpuUsage
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU máy chủ vượt 85% trong 5 phút"
+          description: "Instance {{ $labels.instance }} đang dùng {{ printf \"%.1f\" $value }}% CPU."
+
+      - alert: HighMemoryUsage
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAM máy chủ vượt 85%"
+          description: "Đã dùng {{ printf \"%.1f\" $value }}% RAM."
+
+      - alert: DiskUsageHigh
+        expr: |
+          (node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}
+           - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"})
+          / node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Phân vùng / sử dụng trên 85%"
+          description: "Đã dùng {{ printf \"%.1f\" $value }}% ổ đĩa."
+
+  - name: de3-services
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Không thu thập được số liệu từ {{ $labels.job }}"
+          description: "Target {{ $labels.instance }} (job {{ $labels.job }}) đã down hơn 2 phút."
+
+      - alert: ContainerRestarting
+        expr: changes(container_start_time_seconds{name=~"de3-.*"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} vừa khởi động lại"
+          description: "Container đã restart {{ $value }} lần trong 10 phút qua."
+
+      - alert: MySQLDown
+        expr: mysql_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MySQL không phản hồi"
+          description: "mysqld_exporter không kết nối được tới MySQL."
+
+      - alert: MySQLTooManyConnections
+        expr: mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MySQL sử dụng trên 80% số kết nối cho phép"
+          description: "{{ $value | humanizePercentage }} kết nối đang được dùng."
+
+      - alert: NginxTrafficSpike
+        expr: sum(rate(nginx_http_requests_total[1m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lưu lượng Nginx tăng cao bất thường"
+          description: "Đang phục vụ {{ printf \"%.1f\" $value }} request/giây."

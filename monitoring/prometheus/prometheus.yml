@@ -1,0 +1,44 @@
+# =============================================================================
+# Prometheus – cấu hình thu thập số liệu cho Đề 3
+# Chu kỳ 15 giây, lưu 7 ngày hoặc tối đa 1 GB (khai báo trong docker-compose)
+# =============================================================================
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: de3-wordpress
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+
+  # 1. Sức khoẻ của chính Prometheus
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 2. Tài nguyên máy chủ: CPU, RAM, đĩa, mạng
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # 3. Tài nguyên theo từng container
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # 4. MySQL: số kết nối, truy vấn, bộ đệm
+  - job_name: mysql
+    static_configs:
+      - targets: ['mysqld-exporter:9104']
+
+  # 5. Nginx: số request, kết nối đang mở (qua stub_status ở cổng nội bộ 8090)
+  - job_name: nginx
+    static_configs:
+      - targets: ['nginx-exporter:9113']
+
+  # 6. Sức khoẻ kho log Loki
+  - job_name: loki
+    static_configs:
+      - targets: ['loki:3100']

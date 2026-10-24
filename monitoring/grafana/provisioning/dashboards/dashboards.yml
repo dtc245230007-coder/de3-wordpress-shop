@@ -1,0 +1,17 @@
+# =============================================================================
+# Grafana – tự động nạp dashboard từ thư mục monitoring/grafana/dashboards
+# Dashboard export từ Grafana (JSON) thả vào thư mục này là được nạp sau 30s.
+# =============================================================================
+apiVersion: 1
+
+providers:
+  - name: de3-dashboards
+    orgId: 1
+    folder: "Đề 3 – WordPress"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
