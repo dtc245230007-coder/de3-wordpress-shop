@@ -40,11 +40,40 @@ ensure_page() {  # $1=title $2=slug $3=content
   printf '%s' "$id"
 }
 
-ensure_featured() {  # $1=post_id $2=picsum_id
-  local cur; cur=$("${WP[@]}" post meta get "$1" _thumbnail_id 2>/dev/null || true)
-  [ -n "$cur" ] && return 0
-  "${WP[@]}" media import "https://picsum.photos/id/$2/800/600.jpg" \
-    --post_id="$1" --featured_image --porcelain >/dev/null 2>&1 || true
+# --- Ảnh sản phẩm ------------------------------------------------------------
+# Ảnh thật nằm trong repo (docs/images/products). Container WP-CLI chỉ thấy
+# volume wp_data chứ không thấy thư mục của repo, nên phải chép ảnh vào volume
+# trước rồi mới `wp media import` theo đường dẫn trong container.
+IMG_DIR="docs/images/products"
+SEED_DIR="/var/www/html/wp-content/uploads/_seed"
+
+prepare_images() {
+  local cid; cid=$(docker ps -qf name=de3-wordpress | head -1)
+  docker exec -u 0 "$cid" mkdir -p "$SEED_DIR"
+  docker cp "$IMG_DIR/." "$cid:$SEED_DIR/" >/dev/null
+  docker exec -u 0 "$cid" chown -R 33:33 "$SEED_DIR"
+}
+
+ensure_product_image() {  # $1=post_id $2=tệp ảnh $3=tiêu đề $4=alt
+  local cur url id content
+  cur=$("${WP[@]}" post meta get "$1" _thumbnail_id 2>/dev/null || true)
+  if [ -n "$cur" ]; then
+    url=$("${WP[@]}" eval "echo wp_get_attachment_url($cur);" 2>/dev/null || true)
+    case "$url" in */"$2") return 0 ;; esac
+  fi
+  id=$("${WP[@]}" media import "$SEED_DIR/$2" --post_id="$1" --featured_image \
+        --title="$3" --alt="$4" --porcelain)
+  echo "  + ảnh: $2 (ID $id)" >&2
+  # Với cấu hình Astra hiện tại, ảnh đại diện chỉ hiện ở danh sách/archives,
+  # không hiện ở trang chi tiết → chèn thêm khối ảnh vào đầu nội dung bài.
+  url=$("${WP[@]}" eval "echo wp_get_attachment_url($id);")
+  content=$("${WP[@]}" post get "$1" --field=post_content)
+  case "$content" in
+    *"wp-image-$id"*) ;;
+    *) "${WP[@]}" post update "$1" --post_content="<figure class=\"wp-block-image size-large\"><img src=\"$url\" alt=\"$4\" class=\"wp-image-$id\"/></figure>
+
+$content" >/dev/null ;;
+  esac
 }
 
 echo "== Gói ngôn ngữ, giao diện =="
@@ -83,7 +112,7 @@ HOME_CONTENT='
   <li>Hỗ trợ kỹ thuật 24/7 qua hotline 1900 1234.</li>
 </ul>
 <h3>Sản phẩm nổi bật</h3>
-<!-- wp:latest-posts {"postsToShow":6,"columns":3,"displayPostContent":true,"excerptLength":18,"displayPostDate":false,"postLayout":"grid","addLinkToPost":true} /-->'
+<!-- wp:latest-posts {"postsToShow":6,"columns":3,"displayPostContent":true,"excerptLength":18,"displayPostDate":false,"displayFeaturedImage":true,"featuredImageSizeSlug":"large","postLayout":"grid","addLinkToPost":true} /-->'
 
 HOME_ID=$(ensure_page 'Trang chủ' 'trang-chu' "$HOME_CONTENT")
 # Trang đã tồn tại từ lần chạy trước vẫn phải nhận nội dung mới (idempotent)
@@ -102,14 +131,15 @@ if [ -z "$CAT_ID" ]; then
 fi
 
 echo "== Sản phẩm (danh mục ID ${CAT_ID}) =="
+prepare_images
 idx=0
-while IFS='|' read -r title price desc imgid; do
+while IFS='|' read -r title price desc img; do
   idx=$((idx+1))
   slug="san-pham-${idx}"
   post_id=$(id_of post "$slug")
   if [ -z "$post_id" ]; then
-    content="<h3>${title}</h3>
-<p><strong>Giá: ${price}</strong></p>
+    # Không lặp lại tên sản phẩm: theme đã in tiêu đề bài ở đầu trang.
+    content="<p><strong>Giá: ${price}</strong></p>
 <p>${desc}</p>
 <h4>Thông số nổi bật</h4>
 <ul><li>Bảo hành chính hãng 12 tháng</li><li>Giao hàng trong 24 giờ</li><li>Hỗ trợ trả góp 0%</li></ul>
@@ -120,15 +150,25 @@ while IFS='|' read -r title price desc imgid; do
       --post_author="$ADMIN_ID" --porcelain)
     echo "  + ${title}"
   fi
-  ensure_featured "$post_id" "$imgid"
+  ensure_product_image "$post_id" "$img" "$title" "$title — ${price}"
 done <<'DATA'
-TechPhone X1 Pro|12.990.000đ|Điện thoại flagship với màn hình AMOLED 6.7 inch, camera 108MP và pin 5000mAh sạc nhanh 65W.|20
-TechBook Air 14|21.490.000đ|Laptop mỏng nhẹ 1.2kg, chip xử lý 8 nhân, RAM 16GB, SSD 512GB, màn hình 2.8K 90Hz.|2
-TechPods Pro|2.490.000đ|Tai nghe không dây chống ồn chủ động ANC, pin 30 giờ, kháng nước IPX4.|3
-TechWatch S2|4.990.000đ|Đồng hồ thông minh theo dõi sức khỏe, GPS tích hợp, pin 14 ngày.|5
-TechKey K87|1.290.000đ|Bàn phím cơ không dây 87 phím, switch êm, đèn nền RGB.|8
-TechCharge 65W|590.000đ|Củ sạc nhanh GaN 65W, 3 cổng, hỗ trợ PD và QC 4+.|9
+TechPhone X1 Pro|12.990.000đ|Điện thoại flagship với màn hình AMOLED 6.7 inch, camera 108MP và pin 5000mAh sạc nhanh 65W.|techphone-x1-pro.jpg
+TechBook Air 14|21.490.000đ|Laptop mỏng nhẹ 1.2kg, chip xử lý 8 nhân, RAM 16GB, SSD 512GB, màn hình 2.8K 90Hz.|techbook-air-14.jpg
+TechPods Pro|2.490.000đ|Tai nghe không dây chống ồn chủ động ANC, pin 30 giờ, kháng nước IPX4.|techpods-pro.jpg
+TechWatch S2|4.990.000đ|Đồng hồ thông minh theo dõi sức khỏe, GPS tích hợp, pin 14 ngày.|techwatch-s2.jpg
+TechKey K87|1.290.000đ|Bàn phím cơ không dây 87 phím, switch êm, đèn nền RGB.|techkey-k87.jpg
+TechCharge 65W|590.000đ|Củ sạc nhanh GaN 65W, 3 cổng, hỗ trợ PD và QC 4+.|techcharge-65w.jpg
 DATA
+
+docker exec -u 0 "$(docker ps -qf name=de3-wordpress | head -1)" rm -rf "$SEED_DIR"
+
+echo "== Dọn ảnh mẫu cũ (picsum) =="
+mapfile -t OLD_ATT < <("${WP[@]}" post list --post_type=attachment --fields=ID,post_title --format=csv 2>/dev/null \
+  | awk -F, 'NR>1 && $2 ~ /Picsum ID/ {print $1}')
+if [ "${#OLD_ATT[@]}" -gt 0 ]; then
+  "${WP[@]}" post delete "${OLD_ATT[@]}" --force >/dev/null
+  echo "  - xoá ${#OLD_ATT[@]} ảnh mẫu cũ" >&2
+fi
 
 echo "== Menu =="
 "${WP[@]}" menu create 'Chính' >/dev/null 2>&1 || true
