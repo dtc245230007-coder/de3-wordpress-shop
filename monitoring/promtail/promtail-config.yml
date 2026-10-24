@@ -8,7 +8,9 @@ server:
   log_level: warn
 
 positions:
-  filename: /tmp/positions.yaml
+  # Nằm trên named volume, không phải /tmp: giữ được vị trí đã đọc qua các
+  # lần restart, tránh đẩy lại toàn bộ log cũ lên Loki.
+  filename: /var/lib/promtail/positions.yaml
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
@@ -24,6 +26,12 @@ scrape_configs:
     docker_sd_configs:
       - host: unix:///var/run/docker.sock
         refresh_interval: 5s
+        # Lọc ngay ở Docker API. Nếu chỉ lọc bằng relabel bên dưới, promtail
+        # vẫn "thấy" mọi container trên máy (kể cả container tạm do
+        # scripts/wp.sh tạo rồi xoá) và báo lỗi "No such container".
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=de3-wp"]
     relabel_configs:
       # Chỉ thu log của stack này (máy ảo còn chạy các lab khác như
       # nginx-proxy-manager, web1_app – không nên trộn vào Loki của đề tài).

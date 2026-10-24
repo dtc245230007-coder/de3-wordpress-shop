@@ -32,6 +32,9 @@ volumes:
   grafana_data:
   loki_data:
   pma_config:
+  # Vị trí đã đọc của promtail. Đặt trên volume thay vì /tmp (tmpfs) để
+  # restart không đọc lại toàn bộ log cũ (gây trùng lặp / lỗi out-of-order).
+  promtail_data:
 
 services:
 
@@ -379,6 +382,7 @@ services:
       - ./monitoring/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_data:/var/lib/promtail
     networks:
       - monitoring
     read_only: true
