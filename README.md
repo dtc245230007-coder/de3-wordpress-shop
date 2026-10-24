@@ -166,6 +166,8 @@ ssh -p 22 -L 3000:127.0.0.1:3000 \
            user@192.168.1.50
 ```
 
+Với máy ảo của đồ án: `nguyenduykien@192.168.75.129`.
+
 Sau đó mở trên trình duyệt máy cá nhân:
 
 | Dịch vụ | URL |
